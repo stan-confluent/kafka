@@ -211,6 +211,8 @@ public class Selector implements Selectable, AutoCloseable {
         }
         key.attach(channel);
         this.channels.put(id, channel);
+        if (idleExpiryManager != null)
+            idleExpiryManager.update(channel.id(), time.nanoseconds());
 
         if (connected) {
             // OP_CONNECT won't trigger for immediately connected channels
@@ -230,6 +232,8 @@ public class Selector implements Selectable, AutoCloseable {
         KafkaChannel channel = channelBuilder.buildChannel(id, key, maxReceiveSize);
         key.attach(channel);
         this.channels.put(id, channel);
+        if (idleExpiryManager != null)
+            idleExpiryManager.update(channel.id(), time.nanoseconds());
     }
 
     /**
@@ -490,9 +494,8 @@ public class Selector implements Selectable, AutoCloseable {
             String connectionId = expiredConnection.getKey();
             KafkaChannel channel = this.channels.get(connectionId);
             if (channel != null) {
-                if (log.isTraceEnabled())
-                    log.trace("About to close the idle connection from {} due to being idle for {} millis",
-                            connectionId, (currentTimeNanos - expiredConnection.getValue()) / 1000 / 1000);
+                log.info("About to close the idle connection from {} due to being idle for {} millis",
+                         connectionId, (currentTimeNanos - expiredConnection.getValue()) / 1000 / 1000);
                 channel.state(ChannelState.EXPIRED);
                 close(channel, true, true);
             }

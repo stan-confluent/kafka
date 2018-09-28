@@ -210,4 +210,9 @@ public class KafkaChannel {
 
         return send.completed();
     }
+
+    // package private for testing
+    SelectionKey selectionKey() {
+        return transportLayer.key();
+    }
 }

@@ -194,7 +194,6 @@ public class SslTransportLayerTest {
                 sslParams.setEndpointIdentificationAlgorithm("HTTPS");
                 sslEngine.setSSLParameters(sslParams);
                 TestSslTransportLayer transportLayer = new TestSslTransportLayer(id, key, sslEngine, BUFFER_SIZE, BUFFER_SIZE, BUFFER_SIZE);
-                transportLayer.startHandshake();
                 return transportLayer;
             }
         };
@@ -664,7 +663,6 @@ public class SslTransportLayerTest {
                 SocketChannel socketChannel = (SocketChannel) key.channel();
                 SSLEngine sslEngine = sslFactory.createSslEngine(host, socketChannel.socket().getPort());
                 TestSslTransportLayer transportLayer = new TestSslTransportLayer(id, key, sslEngine, netReadBufSize, netWriteBufSize, appBufSize);
-                transportLayer.startHandshake();
                 return transportLayer;
             }
 
@@ -720,6 +718,12 @@ public class SslTransportLayerTest {
         @Override
         protected int applicationBufferSize() {
             return appBufSize.updateAndGet(super.applicationBufferSize(), true);
+        }
+
+        @Override
+        protected void startHandshake() throws IOException {
+            assertTrue("SSL handshake initialized too early", socketChannel().isConnected());
+            super.startHandshake();
         }
         
         private static class ResizeableBufferSize {
