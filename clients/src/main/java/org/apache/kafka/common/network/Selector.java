@@ -230,6 +230,8 @@ public class Selector implements Selectable, AutoCloseable {
         KafkaChannel channel = channelBuilder.buildChannel(id, key, maxReceiveSize);
         key.attach(channel);
         this.channels.put(id, channel);
+        if (idleExpiryManager != null)
+            idleExpiryManager.update(channel.id(), time.nanoseconds());
     }
 
     /**
