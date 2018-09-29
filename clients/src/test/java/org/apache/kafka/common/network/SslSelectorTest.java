@@ -168,5 +168,4 @@ public class SslSelectorTest extends SelectorTest {
     protected void connect(String node, InetSocketAddress serverAddr) throws IOException {
         blockingConnect(node, serverAddr);
     }
-
 }

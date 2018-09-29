@@ -58,12 +58,10 @@ public class SslTransportLayer implements TransportLayer {
     private ByteBuffer netWriteBuffer;
     private ByteBuffer appReadBuffer;
     private ByteBuffer emptyBuf = ByteBuffer.allocate(0);
+    private boolean initialized = false;
 
     public static SslTransportLayer create(String channelId, SelectionKey key, SSLEngine sslEngine) throws IOException {
-        // Disable renegotiation by default until we have fixed the known issues with the existing implementation
-        SslTransportLayer transportLayer = new SslTransportLayer(channelId, key, sslEngine, false);
-        transportLayer.startHandshake();
-        return transportLayer;
+        return new SslTransportLayer(channelId, key, sslEngine, false);
     }
 
     // Prefer `create`, only use this in tests
@@ -79,6 +77,8 @@ public class SslTransportLayer implements TransportLayer {
      * starts sslEngine handshake process
      */
     protected void startHandshake() throws IOException {
+        if (initialized)
+            throw new IllegalStateException("startHandshake() can only be called once");
 
         this.netReadBuffer = ByteBuffer.allocate(netReadBufferSize());
         this.netWriteBuffer = ByteBuffer.allocate(netWriteBufferSize());
@@ -94,6 +94,7 @@ public class SslTransportLayer implements TransportLayer {
         //initiate handshake
         sslEngine.beginHandshake();
         handshakeStatus = sslEngine.getHandshakeStatus();
+        initialized = true;
     }
 
     @Override
@@ -145,7 +146,7 @@ public class SslTransportLayer implements TransportLayer {
         closing = true;
         sslEngine.closeOutbound();
         try {
-            if (isConnected()) {
+            if (initialized && isConnected()) {
                 if (!flush(netWriteBuffer)) {
                     throw new IOException("Remaining data in the network buffer, can't send SSL close message.");
                 }
@@ -170,6 +171,9 @@ public class SslTransportLayer implements TransportLayer {
             } finally {
                 key.attach(null);
                 key.cancel();
+                netReadBuffer = null;
+                netWriteBuffer = null;
+                appReadBuffer = null;
             }
         }
     }
@@ -221,6 +225,8 @@ public class SslTransportLayer implements TransportLayer {
     */
     @Override
     public void handshake() throws IOException {
+        if (!initialized)
+            startHandshake();
         boolean read = key.isReadable();
         boolean write = key.isWritable();
         handshakeComplete = false;
@@ -710,7 +716,7 @@ public class SslTransportLayer implements TransportLayer {
     protected int netReadBufferSize() {
         return sslEngine.getSession().getPacketBufferSize();
     }
-    
+
     protected int netWriteBufferSize() {
         return sslEngine.getSession().getPacketBufferSize();
     }
@@ -718,7 +724,7 @@ public class SslTransportLayer implements TransportLayer {
     protected int applicationBufferSize() {
         return sslEngine.getSession().getApplicationBufferSize();
     }
-    
+
     protected ByteBuffer netReadBuffer() {
         return netReadBuffer;
     }
