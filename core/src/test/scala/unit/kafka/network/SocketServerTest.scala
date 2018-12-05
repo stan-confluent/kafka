@@ -483,5 +483,4 @@ class SocketServerTest extends JUnitSuite {
       assertFalse(yammerMetricName.getMBeanName.contains("listener="))
     }
   }
-
 }

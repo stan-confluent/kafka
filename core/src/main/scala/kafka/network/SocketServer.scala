@@ -42,6 +42,7 @@ import org.apache.kafka.common.utils.{Time, Utils}
 import scala.collection._
 import JavaConverters._
 import scala.util.control.{ControlThrowable, NonFatal}
+import Processor._
 
 /**
  * An NIO socket server. The threading model is
@@ -276,10 +277,25 @@ private[kafka] class Acceptor(val endPoint: EndPoint,
               try {
                 val key = iter.next
                 iter.remove()
-                if (key.isAcceptable)
-                  accept(key, processors(currentProcessor))
-                else
+                if (key.isAcceptable) {
+                  val socketChannel = accept(key)
+
+                  // Assign the channel to the next processor (using round-robin) to which the
+                  // channel can be added without blocking. If newConnections queue is full on
+                  // all processors, block until the last one is able to accept a connection.
+                  var retriesLeft = processors.size
+                  var processor: Processor = null
+                  do {
+                    retriesLeft -= 1
+                    processor = synchronized {
+                                               currentProcessor = currentProcessor % processors.size
+                                               processors(currentProcessor)
+                                             }
+                  } while (!assignNewConnection(socketChannel, processor, retriesLeft == 0))
+                }
+                else {
                   throw new IllegalStateException("Unrecognized key state for acceptor thread.")
+                }
 
                 // round robin to the next processor thread
                 currentProcessor = (currentProcessor + 1) % processors.length
@@ -332,7 +348,7 @@ private[kafka] class Acceptor(val endPoint: EndPoint,
   /*
    * Accept a new connection
    */
-  def accept(key: SelectionKey, processor: Processor) {
+  private def accept(key: SelectionKey): SocketChannel = {
     val serverSocketChannel = key.channel().asInstanceOf[ServerSocketChannel]
     val socketChannel = serverSocketChannel.accept()
     try {
@@ -342,18 +358,23 @@ private[kafka] class Acceptor(val endPoint: EndPoint,
       socketChannel.socket().setKeepAlive(true)
       if (sendBufferSize != Selectable.USE_DEFAULT_BUFFER_SIZE)
         socketChannel.socket().setSendBufferSize(sendBufferSize)
-
-      debug("Accepted connection from %s on %s and assigned it to processor %d, sendBufferSize [actual|requested]: [%d|%d] recvBufferSize [actual|requested]: [%d|%d]"
-            .format(socketChannel.socket.getRemoteSocketAddress, socketChannel.socket.getLocalSocketAddress, processor.id,
-                  socketChannel.socket.getSendBufferSize, sendBufferSize,
-                  socketChannel.socket.getReceiveBufferSize, recvBufferSize))
-
-      processor.accept(socketChannel)
     } catch {
       case e: TooManyConnectionsException =>
         info("Rejected connection from %s, address already has the configured maximum of %d connections.".format(e.ip, e.count))
         close(socketChannel)
     }
+    socketChannel
+  }
+
+  private def assignNewConnection(socketChannel: SocketChannel, processor: Processor, mayBlock: Boolean): Boolean = {
+    if (processor.accept(socketChannel, mayBlock)) {
+      debug("Accepted connection from %s on %s and assigned it to processor %d, sendBufferSize [actual|requested]: [%d|%d] recvBufferSize [actual|requested]: [%d|%d]"
+              .format(socketChannel.socket.getRemoteSocketAddress, socketChannel.socket.getLocalSocketAddress, processor.id,
+                      socketChannel.socket.getSendBufferSize, sendBufferSize,
+                      socketChannel.socket.getReceiveBufferSize, recvBufferSize))
+      true
+    } else
+      false
   }
 
   /**
@@ -362,6 +383,10 @@ private[kafka] class Acceptor(val endPoint: EndPoint,
   @Override
   def wakeup = nioSelector.wakeup()
 
+}
+
+private[kafka] object Processor {
+  val ConnectionQueueSize = 20
 }
 
 /**
@@ -378,7 +403,8 @@ private[kafka] class Processor(val id: Int,
                                securityProtocol: SecurityProtocol,
                                config: KafkaConfig,
                                metrics: Metrics,
-                               credentialProvider: CredentialProvider) extends AbstractServerThread(connectionQuotas) with KafkaMetricsGroup {
+                               credentialProvider: CredentialProvider,
+                               connectionQueueSize: Int = ConnectionQueueSize) extends AbstractServerThread(connectionQuotas) with KafkaMetricsGroup {
 
   private object ConnectionId {
     def fromString(s: String): Option[ConnectionId] = s.split("-") match {
@@ -395,7 +421,7 @@ private[kafka] class Processor(val id: Int,
     override def toString: String = s"$localHost:$localPort-$remoteHost:$remotePort"
   }
 
-  private val newConnections = new ConcurrentLinkedQueue[SocketChannel]()
+  private val newConnections = new ArrayBlockingQueue[SocketChannel](connectionQueueSize)
   private val inflightResponses = mutable.Map[String, RequestChannel.Response]()
   private[kafka] val metricTags = mutable.LinkedHashMap(
     "listener" -> listenerName.value,
@@ -497,7 +523,8 @@ private[kafka] class Processor(val id: Int,
   }
 
   private def poll() {
-    try selector.poll(300)
+    val pollTimeout = if (newConnections.isEmpty) 300 else 0
+    try selector.poll(pollTimeout)
     catch {
       case e @ (_: IllegalStateException | _: IOException) =>
         error(s"Closing processor $id due to illegal state or IO exception")
@@ -560,16 +587,30 @@ private[kafka] class Processor(val id: Int,
   /**
    * Queue up a new connection for reading
    */
-  def accept(socketChannel: SocketChannel) {
-    newConnections.add(socketChannel)
-    wakeup()
+  def accept(socketChannel: SocketChannel,
+             mayBlock: Boolean): Boolean = {
+    val accepted = {
+      if (newConnections.offer(socketChannel)) {
+        true
+      } else if (mayBlock) {
+        val startNs = time.nanoseconds
+        newConnections.put(socketChannel)
+        true
+      } else {
+        false
+      }
+    }
+    if (accepted)
+      wakeup()
+    accepted
   }
 
   /**
    * Register any new connections that have been queued up
    */
   private def configureNewConnections() {
-    while (!newConnections.isEmpty) {
+    var connectionsProcessed = 0
+    while (connectionsProcessed < connectionQueueSize && !newConnections.isEmpty) {
       val channel = newConnections.poll()
       try {
         debug(s"Processor $id listening to new connection from ${channel.socket.getRemoteSocketAddress}")
@@ -579,6 +620,7 @@ private[kafka] class Processor(val id: Int,
         val remotePort = channel.socket().getPort
         val connectionId = ConnectionId(localHost, localPort, remoteHost, remotePort).toString
         selector.register(connectionId, channel)
+        connectionsProcessed += 1
       } catch {
         // We explicitly catch all non fatal exceptions and close the socket to avoid a socket leak. The other
         // throwables will be caught in processor and logged as uncaught exceptions.
