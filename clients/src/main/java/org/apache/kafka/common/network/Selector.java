@@ -492,8 +492,8 @@ public class Selector implements Selectable, AutoCloseable {
             String connectionId = expiredConnection.getKey();
             KafkaChannel channel = this.channels.get(connectionId);
             if (channel != null) {
-                  log.info("About to close the idle connection from {} due to being idle for {} millis",
-                        connectionId, (currentTimeNanos - expiredConnection.getValue()) / 1000 / 1000);
+                log.info("About to close the idle connection from {} due to being idle for {} millis",
+                         connectionId, (currentTimeNanos - expiredConnection.getValue()) / 1000 / 1000);
                 channel.state(ChannelState.EXPIRED);
                 close(channel, true, true);
             }
