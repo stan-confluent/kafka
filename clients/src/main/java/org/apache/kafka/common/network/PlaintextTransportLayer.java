@@ -217,4 +217,9 @@ public class PlaintextTransportLayer implements TransportLayer {
     public long transferFrom(FileChannel fileChannel, long position, long count) throws IOException {
         return fileChannel.transferTo(position, count, socketChannel);
     }
+
+    @Override
+    public SelectionKey key() {
+        return key;
+    }
 }

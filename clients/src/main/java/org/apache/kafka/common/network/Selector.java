@@ -211,6 +211,8 @@ public class Selector implements Selectable, AutoCloseable {
         }
         key.attach(channel);
         this.channels.put(id, channel);
+        if (idleExpiryManager != null)
+            idleExpiryManager.update(channel.id(), time.nanoseconds());
 
         if (connected) {
             // OP_CONNECT won't trigger for immediately connected channels

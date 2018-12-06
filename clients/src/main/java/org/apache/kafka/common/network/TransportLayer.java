@@ -25,6 +25,7 @@ package org.apache.kafka.common.network;
  */
 import java.io.IOException;
 import java.nio.channels.FileChannel;
+import java.nio.channels.SelectionKey;
 import java.nio.channels.SocketChannel;
 import java.nio.channels.ScatteringByteChannel;
 import java.nio.channels.GatheringByteChannel;
@@ -99,5 +100,7 @@ public interface TransportLayer extends ScatteringByteChannel, GatheringByteChan
      * @see FileChannel#transferTo(long, long, java.nio.channels.WritableByteChannel)
      */
     long transferFrom(FileChannel fileChannel, long position, long count) throws IOException;
+
+    SelectionKey key();
 
 }

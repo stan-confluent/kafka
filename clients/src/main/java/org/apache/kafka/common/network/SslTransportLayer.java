@@ -749,4 +749,8 @@ public class SslTransportLayer implements TransportLayer {
         return fileChannel.transferTo(position, count, this);
     }
 
+    @Override
+    public SelectionKey key() {
+        return key;
+    }
 }
