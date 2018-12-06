@@ -288,9 +288,9 @@ private[kafka] class Acceptor(val endPoint: EndPoint,
                   do {
                     retriesLeft -= 1
                     processor = synchronized {
-                                               currentProcessor = currentProcessor % processors.size
-                                               processors(currentProcessor)
-                                             }
+                      currentProcessor = currentProcessor % processors.size
+                      processors(currentProcessor)
+                    }
                   } while (!assignNewConnection(socketChannel, processor, retriesLeft == 0))
                 }
                 else {
@@ -600,7 +600,6 @@ private[kafka] class Processor(val id: Int,
       if (newConnections.offer(socketChannel)) {
         true
       } else if (mayBlock) {
-        val startNs = time.nanoseconds
         newConnections.put(socketChannel)
         true
       } else {
