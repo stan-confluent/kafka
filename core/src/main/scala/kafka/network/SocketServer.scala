@@ -33,7 +33,7 @@ import kafka.server.KafkaConfig
 import kafka.utils._
 import org.apache.kafka.common.errors.InvalidRequestException
 import org.apache.kafka.common.metrics._
-import org.apache.kafka.common.network.{ChannelBuilders, KafkaChannel, ListenerName, Selectable, Send, Selector => KSelector}
+import org.apache.kafka.common.network.{ChannelBuilder, ChannelBuilders, KafkaChannel, ListenerName, Selectable, Send, Selector => KSelector}
 import org.apache.kafka.common.security.auth.KafkaPrincipal
 import org.apache.kafka.common.protocol.SecurityProtocol
 import org.apache.kafka.common.protocol.types.SchemaException
@@ -423,6 +423,8 @@ private[kafka] class Processor(val id: Int,
 
   private val newConnections = new ArrayBlockingQueue[SocketChannel](connectionQueueSize)
   private val inflightResponses = mutable.Map[String, RequestChannel.Response]()
+  // Only for testing
+  private[network] def inflightResponseCount: Int = inflightResponses.size
   private[kafka] val metricTags = mutable.LinkedHashMap(
     "listener" -> listenerName.value,
     "networkProcessor" -> id.toString
@@ -439,16 +441,21 @@ private[kafka] class Processor(val id: Int,
     Map("networkProcessor" -> id.toString)
   )
 
-  private val selector = new KSelector(
-    maxRequestSize,
-    connectionsMaxIdleMs,
-    metrics,
-    time,
-    "socket-server",
-    metricTags,
-    false,
-    true,
-    ChannelBuilders.serverChannelBuilder(listenerName, securityProtocol, config, credentialProvider.credentialCache))
+  private val selector = createSelector(ChannelBuilders.serverChannelBuilder(listenerName, securityProtocol, config, credentialProvider.credentialCache))
+
+  // Visible to override for testing
+  protected[network] def createSelector(channelBuilder: ChannelBuilder): KSelector = {
+    new KSelector(
+      maxRequestSize,
+      connectionsMaxIdleMs,
+      metrics,
+      time,
+      "socket-server",
+      metricTags,
+      false,
+      true,
+      channelBuilder)
+  }
 
   override def run() {
     startupComplete()
