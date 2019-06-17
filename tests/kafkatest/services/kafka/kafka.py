@@ -175,18 +175,18 @@ class KafkaService(KafkaPathResolverMixin, JmxMixin, Service):
     def interbroker_security_protocol(self, security_protocol):
         self.setup_interbroker_listener(security_protocol)
 
-    def setup_interbroker_listener(self, security_protocol=None, interbroker_listener_name=None, interbroker_port=9099):
-        if interbroker_listener_name is None:
-            interbroker_listener_name = security_protocol
+    def setup_interbroker_listener(self, security_protocol=None, listener_name=None, port=9099):
+        if listener_name is None:
+            listener_name = security_protocol
 
-        if interbroker_listener_name in self.port_mappings:
-            self.interbroker_listener = self.port_mappings[interbroker_listener_name]
+        if listener_name in self.port_mappings:
+            self.interbroker_listener = self.port_mappings[listener_name]
             self.interbroker_listener.security_protocol = security_protocol
             self.interbroker_listener.open = True
         else:
-            self.interbroker_listener = KafkaListener(interbroker_listener_name, interbroker_port,
+            self.interbroker_listener = KafkaListener(listener_name, port,
                                                       security_protocol, True)
-            self.port_mappings[interbroker_listener_name] = self.interbroker_listener
+            self.port_mappings[listener_name] = self.interbroker_listener
 
     @property
     def security_config(self):

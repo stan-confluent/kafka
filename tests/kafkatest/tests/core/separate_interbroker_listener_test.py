@@ -10,6 +10,7 @@ from kafkatest.services.zookeeper import ZookeeperService
 from kafkatest.tests.produce_consume_validate import ProduceConsumeValidateTest
 from kafkatest.utils import is_int
 
+
 class TestSeparateInterbrokerListener(ProduceConsumeValidateTest):
 
     def __init__(self, test_context):
@@ -34,7 +35,7 @@ class TestSeparateInterbrokerListener(ProduceConsumeValidateTest):
     def roll_in_interbroker_listener(self, broker_protocol, broker_sasl_mechanism, use_separate_listener=False):
         interbroker_listener_name = KafkaService.INTERBROKER_LISTENER_NAME if use_separate_listener else broker_protocol
         self.kafka.setup_interbroker_listener(security_protocol=broker_protocol,
-                                              interbroker_listener_name=interbroker_listener_name)
+                                              listener_name=interbroker_listener_name)
         self.kafka.interbroker_sasl_mechanism = broker_sasl_mechanism
         self.bounce()
 
@@ -93,7 +94,7 @@ class TestSeparateInterbrokerListener(ProduceConsumeValidateTest):
         self.kafka.security_protocol = client_protocol
         self.kafka.client_sasl_mechanism = client_sasl_mechanism
         self.kafka.setup_interbroker_listener(security_protocol=broker_protocol,
-                                              interbroker_listener_name=KafkaService.INTERBROKER_LISTENER_NAME)
+                                              listener_name=KafkaService.INTERBROKER_LISTENER_NAME)
         self.kafka.interbroker_sasl_mechanism = broker_sasl_mechanism
 
         self.kafka.start()
