@@ -94,7 +94,7 @@ class KafkaService(KafkaPathResolverMixin, JmxMixin, Service):
                  client_sasl_mechanism=SecurityConfig.SASL_MECHANISM_GSSAPI, interbroker_sasl_mechanism=SecurityConfig.SASL_MECHANISM_GSSAPI,
                  authorizer_class_name=None, topics=None, version=DEV_BRANCH, jmx_object_names=None,
                  jmx_attributes=None, zk_connect_timeout=5000, zk_session_timeout=6000, server_prop_overides=None, zk_chroot=None,
-                 use_separate_interbroker_listener=False):
+                 interbroker_listener_name=None):
         """
         :type context
         :type zk: ZookeeperService
@@ -149,13 +149,11 @@ class KafkaService(KafkaPathResolverMixin, JmxMixin, Service):
             'PLAINTEXT': KafkaListener('PLAINTEXT', 9092, 'PLAINTEXT', False),
             'SSL': KafkaListener('SSL', 9093, 'SSL', False),
             'SASL_PLAINTEXT': KafkaListener('SASL_PLAINTEXT', 9094, 'SASL_PLAINTEXT', False),
-            'SASL_SSL': KafkaListener('SASL_SSL', 9095, 'SASL_SSL', False),
-            KafkaService.INTERBROKER_LISTENER_NAME:
-                KafkaListener(KafkaService.INTERBROKER_LISTENER_NAME, 9099, None, False)
+            'SASL_SSL': KafkaListener('SASL_SSL', 9095, 'SASL_SSL', False)
         }
 
         self.interbroker_listener = None
-        self.setup_interbroker_listener(interbroker_security_protocol, use_separate_interbroker_listener)
+        self.setup_interbroker_listener(interbroker_security_protocol, interbroker_listener_name)
         self.interbroker_sasl_mechanism = interbroker_sasl_mechanism
 
         for node in self.nodes:
@@ -175,20 +173,20 @@ class KafkaService(KafkaPathResolverMixin, JmxMixin, Service):
     # TODO: update clients to use constructor or setup_interbroker_listener() and get rid of this property setter
     @interbroker_security_protocol.setter
     def interbroker_security_protocol(self, security_protocol):
-        self.setup_interbroker_listener(security_protocol, use_separate_listener=False)
+        self.setup_interbroker_listener(security_protocol)
 
-    def setup_interbroker_listener(self, security_protocol, use_separate_listener=False):
-        self.use_separate_interbroker_listener = use_separate_listener
+    def setup_interbroker_listener(self, security_protocol=None, interbroker_listener_name=None, interbroker_port=9099):
+        if interbroker_listener_name is None:
+            interbroker_listener_name = security_protocol
 
-        if self.use_separate_interbroker_listener:
-            # do not close existing port here since it is not used exclusively for interbroker communication
-            self.interbroker_listener = self.port_mappings[KafkaService.INTERBROKER_LISTENER_NAME]
+        if interbroker_listener_name in self.port_mappings:
+            self.interbroker_listener = self.port_mappings[interbroker_listener_name]
             self.interbroker_listener.security_protocol = security_protocol
+            self.interbroker_listener.open = True
         else:
-            # close dedicated interbroker port, so it's not dangling in 'listeners' and 'advertised.listeners'
-            self.close_port(KafkaService.INTERBROKER_LISTENER_NAME)
-            self.interbroker_listener = self.port_mappings[security_protocol]
-        self.interbroker_listener.open = True
+            self.interbroker_listener = KafkaListener(interbroker_listener_name, interbroker_port,
+                                                      security_protocol, True)
+            self.port_mappings[interbroker_listener_name] = self.interbroker_listener
 
     @property
     def security_config(self):

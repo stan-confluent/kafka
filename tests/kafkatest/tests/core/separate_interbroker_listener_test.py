@@ -10,14 +10,12 @@ from kafkatest.services.zookeeper import ZookeeperService
 from kafkatest.tests.produce_consume_validate import ProduceConsumeValidateTest
 from kafkatest.utils import is_int
 
-
 class TestSeparateInterbrokerListener(ProduceConsumeValidateTest):
 
     def __init__(self, test_context):
         super(TestSeparateInterbrokerListener, self).__init__(test_context=test_context)
 
     def setUp(self):
-        self.logger.warn('setUp()')
         self.topic = 'test_topic'
         self.zk = ZookeeperService(self.test_context, num_nodes=1)
         self.kafka = KafkaService(self.test_context, num_nodes=3, zk=self.zk, topics={self.topic: {
@@ -34,7 +32,9 @@ class TestSeparateInterbrokerListener(ProduceConsumeValidateTest):
             self.test_context, 1, self.kafka, self.topic, consumer_timeout_ms=60000, message_validator=is_int)
 
     def roll_in_interbroker_listener(self, broker_protocol, broker_sasl_mechanism, use_separate_listener=False):
-        self.kafka.setup_interbroker_listener(broker_protocol, use_separate_listener)
+        interbroker_listener_name = KafkaService.INTERBROKER_LISTENER_NAME if use_separate_listener else broker_protocol
+        self.kafka.setup_interbroker_listener(security_protocol=broker_protocol,
+                                              interbroker_listener_name=interbroker_listener_name)
         self.kafka.interbroker_sasl_mechanism = broker_sasl_mechanism
         self.bounce()
 
@@ -62,7 +62,7 @@ class TestSeparateInterbrokerListener(ProduceConsumeValidateTest):
 
         self.kafka.security_protocol = client_protocol
         self.kafka.client_sasl_mechanism = client_sasl_mechanism
-        self.kafka.setup_interbroker_listener(client_protocol, use_separate_listener=False)
+        self.kafka.setup_interbroker_listener(security_protocol=client_protocol)
         self.kafka.interbroker_sasl_mechanism = client_sasl_mechanism
 
         self.kafka.start()
@@ -87,17 +87,16 @@ class TestSeparateInterbrokerListener(ProduceConsumeValidateTest):
         Close dedicated {{broker_protocol}} listener via rolling restart.
         Ensure we can produce and consume via {{client_protocol}} listener throughout.
         """
-        self.logger.warn('Starting test')
         client_protocol = SecurityConfig.SASL_SSL
         client_sasl_mechanism = SecurityConfig.SASL_MECHANISM_GSSAPI
 
         self.kafka.security_protocol = client_protocol
         self.kafka.client_sasl_mechanism = client_sasl_mechanism
-        self.kafka.setup_interbroker_listener(broker_protocol, use_separate_listener=True)
+        self.kafka.setup_interbroker_listener(security_protocol=broker_protocol,
+                                              interbroker_listener_name=KafkaService.INTERBROKER_LISTENER_NAME)
         self.kafka.interbroker_sasl_mechanism = broker_sasl_mechanism
 
         self.kafka.start()
-        self.logger.info("Kafka started with separate interbroker listener. Starting produce/consume loop and rolling restart")
         # create producer and consumer via client security protocol
         self.create_producer_and_consumer()
 
