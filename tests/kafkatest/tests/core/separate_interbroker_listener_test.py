@@ -33,9 +33,7 @@ class TestSeparateInterbrokerListener(ProduceConsumeValidateTest):
             self.test_context, 1, self.kafka, self.topic, consumer_timeout_ms=60000, message_validator=is_int)
 
     def roll_in_interbroker_listener(self, broker_protocol, broker_sasl_mechanism, use_separate_listener=False):
-        interbroker_listener_name = KafkaService.INTERBROKER_LISTENER_NAME if use_separate_listener else broker_protocol
-        self.kafka.setup_interbroker_listener(security_protocol=broker_protocol,
-                                              listener_name=interbroker_listener_name)
+        self.kafka.set_use_separate_interbroker_listener(broker_protocol, use_separate_listener)
         self.kafka.interbroker_sasl_mechanism = broker_sasl_mechanism
         self.bounce()
 
@@ -63,7 +61,7 @@ class TestSeparateInterbrokerListener(ProduceConsumeValidateTest):
 
         self.kafka.security_protocol = client_protocol
         self.kafka.client_sasl_mechanism = client_sasl_mechanism
-        self.kafka.setup_interbroker_listener(security_protocol=client_protocol)
+        self.kafka.select_interbroker_listener(client_protocol)
         self.kafka.interbroker_sasl_mechanism = client_sasl_mechanism
 
         self.kafka.start()
@@ -93,8 +91,7 @@ class TestSeparateInterbrokerListener(ProduceConsumeValidateTest):
 
         self.kafka.security_protocol = client_protocol
         self.kafka.client_sasl_mechanism = client_sasl_mechanism
-        self.kafka.setup_interbroker_listener(security_protocol=broker_protocol,
-                                              listener_name=KafkaService.INTERBROKER_LISTENER_NAME)
+        self.kafka.add_separate_interbroker_listener(broker_protocol)
         self.kafka.interbroker_sasl_mechanism = broker_sasl_mechanism
 
         self.kafka.start()

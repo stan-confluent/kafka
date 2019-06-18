@@ -68,6 +68,7 @@ class KafkaService(KafkaPathResolverMixin, JmxMixin, Service):
     SIMPLE_AUTHORIZER = "kafka.security.auth.SimpleAclAuthorizer"
     HEAP_DUMP_FILE = os.path.join(PERSISTENT_ROOT, "kafka_heap_dump.bin")
     INTERBROKER_LISTENER_NAME = 'INTERNAL'
+    INTERBROKER_PORT = 9099
 
     logs = {
         "kafka_server_start_stdout_stderr": {
@@ -146,14 +147,22 @@ class KafkaService(KafkaPathResolverMixin, JmxMixin, Service):
         self.zk_session_timeout = zk_session_timeout
 
         self.port_mappings = {
-            'PLAINTEXT': KafkaListener('PLAINTEXT', 9092, 'PLAINTEXT', False),
-            'SSL': KafkaListener('SSL', 9093, 'SSL', False),
-            'SASL_PLAINTEXT': KafkaListener('SASL_PLAINTEXT', 9094, 'SASL_PLAINTEXT', False),
-            'SASL_SSL': KafkaListener('SASL_SSL', 9095, 'SASL_SSL', False)
+            # 'PLAINTEXT': KafkaListener('PLAINTEXT', 9092, 'PLAINTEXT', False),
+            # 'SSL': KafkaListener('SSL', 9093, 'SSL', False),
+            # 'SASL_PLAINTEXT': KafkaListener('SASL_PLAINTEXT', 9094, 'SASL_PLAINTEXT', False),
+            # 'SASL_SSL': KafkaListener('SASL_SSL', 9095, 'SASL_SSL', False)
         }
+        self.add_listener('PLAINTEXT', port=9092)
+        self.add_listener('SSL', port=9093)
+        self.add_listener('SASL_PLAINTEXT', port=9094)
+        self.add_listener('SASL_SSL', port=9095)
 
-        self.interbroker_listener = None
-        self.setup_interbroker_listener(interbroker_security_protocol, interbroker_listener_name)
+        if interbroker_listener_name:
+            self.add_separate_interbroker_listener(name=interbroker_listener_name,
+                                                   security_protocol=interbroker_security_protocol)
+        else:
+            self.interbroker_listener = self.port_mappings[interbroker_security_protocol]
+
         self.interbroker_sasl_mechanism = interbroker_sasl_mechanism
 
         for node in self.nodes:
@@ -170,23 +179,38 @@ class KafkaService(KafkaPathResolverMixin, JmxMixin, Service):
 
     # this is required for backwards compatibility - there are a lot of tests that set this property explicitly
     # meaning 'use one of the existing listeners that match given security protocol, do not use custom listener'
-    # TODO: update clients to use constructor or setup_interbroker_listener() and get rid of this property setter
+    # TODO: update clients to use select_interbroker_listener() and get rid of this property setter
     @interbroker_security_protocol.setter
     def interbroker_security_protocol(self, security_protocol):
-        self.setup_interbroker_listener(security_protocol)
+        self.select_interbroker_listener(name=security_protocol)
 
-    def setup_interbroker_listener(self, security_protocol=None, listener_name=None, port=9099):
-        if listener_name is None:
-            listener_name = security_protocol
+    def add_listener(self, security_protocol=None, name=None, port=9092):
+        if name is None:
+            name = security_protocol
+        if name in self.port_mappings:
+            raise Exception('Listener with name %s already exists', name)
+        listener = KafkaListener(name, port, security_protocol, False)
+        self.port_mappings[listener.name] = listener
 
-        if listener_name in self.port_mappings:
-            self.interbroker_listener = self.port_mappings[listener_name]
-            self.interbroker_listener.security_protocol = security_protocol
-            self.interbroker_listener.open = True
+    def remove_listener(self, name):
+        self.port_mappings.pop(name, None)
+
+    def select_interbroker_listener(self, name):
+        self.interbroker_listener = self.port_mappings[name]
+        self.interbroker_listener.open = True
+
+    def add_separate_interbroker_listener(self, security_protocol, name=INTERBROKER_LISTENER_NAME,
+                                          port=INTERBROKER_PORT):
+        self.add_listener(name=name, security_protocol=security_protocol, port=port)
+        self.select_interbroker_listener(name)
+
+    def set_use_separate_interbroker_listener(self, security_protocol, use_separate_listener):
+        if use_separate_listener:
+            self.add_separate_interbroker_listener(security_protocol=security_protocol,
+                                                   name=self.INTERBROKER_LISTENER_NAME)
         else:
-            self.interbroker_listener = KafkaListener(listener_name, port,
-                                                      security_protocol, True)
-            self.port_mappings[listener_name] = self.interbroker_listener
+            self.remove_listener(self.INTERBROKER_LISTENER_NAME)
+            self.select_interbroker_listener(security_protocol)
 
     @property
     def security_config(self):
