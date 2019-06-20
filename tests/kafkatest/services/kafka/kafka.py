@@ -14,11 +14,14 @@
 # limitations under the License.
 
 import collections
+import itertools
 import json
 import os.path
 import re
 import signal
 import time
+
+from typing import Dict, Any
 
 from ducktape.services.service import Service
 from ducktape.utils.util import wait_until
@@ -35,11 +38,12 @@ from kafkatest.version import DEV_BRANCH, LATEST_0_10_0
 
 class KafkaListener:
 
-    def __init__(self, name, port_number, security_protocol, open=False):
+    def __init__(self, name, port_number, security_protocol, extra_props=None):
         self.name = name
         self.port_number = port_number
         self.security_protocol = security_protocol
-        self.open = open
+
+        self.props = extra_props if extra_props is not None else {}
 
     def listener(self):
         return "%s://:%s" % (self.name, str(self.port_number))
@@ -50,8 +54,20 @@ class KafkaListener:
     def listener_security_protocol(self):
         return "%s:%s" % (self.name, self.security_protocol)
 
+    def per_listener_props(self):
+        lines = ('listener.name.%(name)s.%(key)s=%(value)s' % {
+            'name': self.name,
+            'key': key,
+            'value': value
+        } for key, value in self.props.iteritems())
+        # Extra blank lines ensure this can be appended/prepended safely
+        return "\n".join(itertools.chain([""], lines, [""]))
+
 
 class KafkaService(KafkaPathResolverMixin, JmxMixin, Service):
+    listeners_map = None  # type: Dict[str, KafkaListener]
+    client_listener = None # type: KafkaListener
+    interbroker_listener = None # type: KafkaListener
     PERSISTENT_ROOT = "/mnt/kafka"
     STDOUT_STDERR_CAPTURE = os.path.join(PERSISTENT_ROOT, "server-start-stdout-stderr.log")
     LOG4J_CONFIG = os.path.join(PERSISTENT_ROOT, "kafka-log4j.properties")
@@ -69,6 +85,7 @@ class KafkaService(KafkaPathResolverMixin, JmxMixin, Service):
     HEAP_DUMP_FILE = os.path.join(PERSISTENT_ROOT, "kafka_heap_dump.bin")
     INTERBROKER_LISTENER_NAME = 'INTERNAL'
     INTERBROKER_PORT = 9099
+    CLIENT_PORT = 9092
 
     logs = {
         "kafka_server_start_stdout_stderr": {
@@ -115,8 +132,6 @@ class KafkaService(KafkaPathResolverMixin, JmxMixin, Service):
 
         self.zk = zk
 
-        self.security_protocol = security_protocol
-        self.client_sasl_mechanism = client_sasl_mechanism
         self.topics = topics
         self.minikdc = None
         self.authorizer_class_name = authorizer_class_name
@@ -146,23 +161,14 @@ class KafkaService(KafkaPathResolverMixin, JmxMixin, Service):
         # e.g. brokers to deregister after a hard kill.
         self.zk_session_timeout = zk_session_timeout
 
-        self.port_mappings = {
-            # 'PLAINTEXT': KafkaListener('PLAINTEXT', 9092, 'PLAINTEXT', False),
-            # 'SSL': KafkaListener('SSL', 9093, 'SSL', False),
-            # 'SASL_PLAINTEXT': KafkaListener('SASL_PLAINTEXT', 9094, 'SASL_PLAINTEXT', False),
-            # 'SASL_SSL': KafkaListener('SASL_SSL', 9095, 'SASL_SSL', False)
-        }
-        self.add_listener('PLAINTEXT', port=9092)
-        self.add_listener('SSL', port=9093)
-        self.add_listener('SASL_PLAINTEXT', port=9094)
-        self.add_listener('SASL_SSL', port=9095)
+        self.listeners_map = {}
 
-        if interbroker_listener_name:
-            self.add_separate_interbroker_listener(name=interbroker_listener_name,
-                                                   security_protocol=interbroker_security_protocol)
-        else:
-            self.interbroker_listener = self.port_mappings[interbroker_security_protocol]
+        self.add_client_listener(security_protocol=security_protocol)
+        self.client_sasl_mechanism = client_sasl_mechanism
 
+        if interbroker_listener_name is None:
+            interbroker_listener_name = interbroker_security_protocol
+        self.add_interbroker_listener(security_protocol=interbroker_security_protocol, name=interbroker_listener_name)
         self.interbroker_sasl_mechanism = interbroker_sasl_mechanism
 
         for node in self.nodes:
@@ -177,57 +183,62 @@ class KafkaService(KafkaPathResolverMixin, JmxMixin, Service):
     def interbroker_security_protocol(self):
         return self.interbroker_listener.security_protocol
 
-    # this is required for backwards compatibility - there are a lot of tests that set this property explicitly
-    # meaning 'use one of the existing listeners that match given security protocol, do not use custom listener'
-    # TODO: update clients to use select_interbroker_listener() and get rid of this property setter
     @interbroker_security_protocol.setter
     def interbroker_security_protocol(self, security_protocol):
-        self.select_interbroker_listener(name=security_protocol)
+        # TODO: what should happen in this case?
+        self.interbroker_listener = self.listeners_map[security_protocol]
 
-    def add_listener(self, security_protocol=None, name=None, port=9092):
+    @property
+    def security_protocol(self):
+        return self.client_listener.security_protocol
+
+    @security_protocol.setter
+    def security_protocol(self, security_protocol):
+        # TODO: what should happen in this case?
+        self.client_listener = self.listeners_map[security_protocol]
+
+    def reset_listeners(self):
+        self.listeners_map = {}
+
+    def add_or_get_listener(self, security_protocol=None, name=None, port=None):
+        """
+        Adds a new listener with given name, port and security protocol OR, if a listener with such name
+        (or security protocol if name is None) already exists, returns it instead.
+        :param str security_protocol: security protocol this listener should use
+        :param str name: listener name. If None, security_protocol will be used instead
+        :param int port: port to listen on
+        :return KafkaListener: newly added listener
+        """
         if name is None:
             name = security_protocol
-        if name in self.port_mappings:
-            raise Exception('Listener with name %s already exists', name)
-        listener = KafkaListener(name, port, security_protocol, False)
-        self.port_mappings[listener.name] = listener
+        if name in self.listeners_map:
+            self.logger.info('Listener with name %s already exists', name)
+            return self.listeners_map[name]
+
+        listener = KafkaListener(name, port, security_protocol)
+        self.listeners_map[listener.name] = listener
+        return listener
+
+    def add_interbroker_listener(self, security_protocol=None, name=INTERBROKER_LISTENER_NAME, port=INTERBROKER_PORT):
+        self.interbroker_listener = self.add_or_get_listener(security_protocol=security_protocol, name=name, port=port)
+
+    def add_client_listener(self, security_protocol=None, name=None, port=CLIENT_PORT):
+        self.client_listener = self.add_or_get_listener(security_protocol=security_protocol, name=name, port=port)
 
     def remove_listener(self, name):
-        self.port_mappings.pop(name, None)
-
-    def select_interbroker_listener(self, name):
-        self.interbroker_listener = self.port_mappings[name]
-        self.interbroker_listener.open = True
-
-    def add_separate_interbroker_listener(self, security_protocol, name=INTERBROKER_LISTENER_NAME,
-                                          port=INTERBROKER_PORT):
-        self.add_listener(name=name, security_protocol=security_protocol, port=port)
-        self.select_interbroker_listener(name)
-
-    def set_use_separate_interbroker_listener(self, security_protocol, use_separate_listener):
-        if use_separate_listener:
-            self.add_separate_interbroker_listener(security_protocol=security_protocol,
-                                                   name=self.INTERBROKER_LISTENER_NAME)
-        else:
-            self.remove_listener(self.INTERBROKER_LISTENER_NAME)
-            self.select_interbroker_listener(security_protocol)
+        self.listeners_map.pop(name, None)
 
     @property
     def security_config(self):
-        config = SecurityConfig(self.context, self.security_protocol, self.interbroker_listener.security_protocol,
+        config = SecurityConfig(self.context,
+                                self.client_listener.security_protocol,
+                                self.interbroker_listener.security_protocol,
                                 zk_sasl=self.zk.zk_sasl,
                                 client_sasl_mechanism=self.client_sasl_mechanism,
                                 interbroker_sasl_mechanism=self.interbroker_sasl_mechanism)
-        for port in self.port_mappings.values():
-            if port.open:
-                config.enable_security_protocol(port.security_protocol)
+        for port in self.listeners_map.values():
+            config.enable_security_protocol(port.security_protocol)
         return config
-
-    def open_port(self, listener_name):
-        self.port_mappings[listener_name].open = True
-
-    def close_port(self, listener_name):
-        self.port_mappings[listener_name].open = False
 
     def start_minikdc(self, add_principals=""):
         if self.security_config.has_sasl:
@@ -241,9 +252,6 @@ class KafkaService(KafkaPathResolverMixin, JmxMixin, Service):
         return len(self.pids(node)) > 0
 
     def start(self, add_principals=""):
-        self.open_port(self.security_protocol)
-        self.interbroker_listener.open = True
-
         self.start_minikdc(add_principals)
         self._ensure_zk_chroot()
 
@@ -282,16 +290,15 @@ class KafkaService(KafkaPathResolverMixin, JmxMixin, Service):
         advertised_listeners = []
         protocol_map = []
 
-        for port in self.port_mappings.values():
-            if port.open:
-                listeners.append(port.listener())
-                advertised_listeners.append(port.advertised_listener(node))
-                protocol_map.append(port.listener_security_protocol())
+        for port in self.listeners_map.values():
+            listeners.append(port.listener())
+            advertised_listeners.append(port.advertised_listener(node))
+            protocol_map.append(port.listener_security_protocol())
 
         self.listeners = ','.join(listeners)
         self.advertised_listeners = ','.join(advertised_listeners)
         self.listener_security_protocol_map = ','.join(protocol_map)
-        self.interbroker_bootstrap_servers = self.__bootstrap_servers(self.interbroker_listener, True)
+        self.interbroker_bootstrap_servers = self.__bootstrap_servers(self.interbroker_listener)
 
     def prop_file(self, node):
         self.set_protocol_and_port(node)
@@ -313,6 +320,9 @@ class KafkaService(KafkaPathResolverMixin, JmxMixin, Service):
 
         #update template configs with test override configs
         configs.update(override_configs)
+
+        for listener in self.listeners_map.values():
+            configs.update(listener.per_listener_props())
 
         prop_file = self.render_configs(configs)
         return prop_file
@@ -755,23 +765,23 @@ class KafkaService(KafkaPathResolverMixin, JmxMixin, Service):
     def zk_connect_setting(self):
         return self.zk.connect_setting(self.zk_chroot)
 
-    def __bootstrap_servers(self, port, validate=True, offline_nodes=[]):
-        if validate and not port.open:
-            raise ValueError("We are retrieving bootstrap servers for the port: %s which is not currently open. - " %
-                             str(port.port_number))
-
+    def __bootstrap_servers(self, port, offline_nodes=[]):
         return ','.join([node.account.hostname + ":" + str(port.port_number)
                          for node in self.nodes
                          if node not in offline_nodes])
 
-    def bootstrap_servers(self, protocol='PLAINTEXT', validate=True, offline_nodes=[]):
+    def bootstrap_servers(self, protocol='PLAINTEXT', validate=True, offline_nodes=[], name=None):
         """Return comma-delimited list of brokers in this cluster formatted as HOSTNAME1:PORT1,HOSTNAME:PORT2,...
 
         This is the format expected by many config files.
         """
-        port_mapping = self.port_mappings[protocol]
+        if name is None:
+            name = protocol
+        if name not in self.listeners_map:
+            raise Exception("No listener found with name %s", name)
+        port_mapping = self.listeners_map[name]
         self.logger.info("Bootstrap client port is: " + str(port_mapping.port_number))
-        return self.__bootstrap_servers(port_mapping, validate, offline_nodes)
+        return self.__bootstrap_servers(port_mapping, offline_nodes=offline_nodes)
 
     def controller(self):
         """ Get the controller node
